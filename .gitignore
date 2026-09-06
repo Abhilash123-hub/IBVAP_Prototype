@@ -1,0 +1,42 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Large Model Weights (exceeding Git limits)
+*.pt
+*.pth
+*.onnx
+rtdetr-l.pt
+yolov8n.pt
+
+# Video Footages (large binary media)
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# Databases & Local Evidence
+*.db
+test_surveillance.db
+surveillance.db
+test_evidence/
+evidence_reports/
+evidence_*.jpg
+*.pdf
+*.mp3
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

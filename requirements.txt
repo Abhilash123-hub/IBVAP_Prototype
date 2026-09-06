@@ -1,0 +1,24 @@
+# --- Core & UI ---
+streamlit
+opencv-python-headless
+numpy
+Pillow
+fpdf
+
+# --- AI & Computer Vision (YOLOv8 & Tracking) ---
+ultralytics
+lap
+
+# --- OCR (EasyOCR for Python 3.12 compatibility) ---
+easyocr
+
+# --- Blockchain & Web3 ---
+web3
+
+# --- Data Processing & Fuzzy Matching ---
+thefuzz
+python-Levenshtein
+pandas
+
+# --- Utilities ---
+requests
