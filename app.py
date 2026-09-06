@@ -310,6 +310,84 @@ if "active_feed_selection" not in st.session_state:
     st.session_state["active_feed_selection"] = "CAM-01 BOP-NORTH (DAY PERIMETER PATROL)"
 if "uploaded_video_path" not in st.session_state:
     st.session_state["uploaded_video_path"] = None
+if "fence_config" not in st.session_state:
+    st.session_state["fence_config"] = {
+        "preset": "CENTER CORRIDOR (46% - 56%)",
+        "top_pct": 46,
+        "bot_pct": 56,
+        "left_pct": 2,
+        "right_pct": 98,
+        "tripwire_pct": 50,
+        "poly_mode": "CORRIDOR SLIDERS",
+        "p1_x": 2, "p1_y": 46,
+        "p2_x": 98, "p2_y": 46,
+        "p3_x": 98, "p3_y": 56,
+        "p4_x": 2, "p4_y": 56,
+        "loiter_threshold_sec": 5.0,
+        "is_armed": True
+    }
+
+def compute_fence_geometry(h, w, cfg=None):
+    """
+    Computes absolute pixel coordinates for virtual fence polygon and tripwire
+    from normalized percentage configuration.
+    """
+    cfg = cfg or st.session_state.get("fence_config", {})
+    if cfg.get("poly_mode") == "4-POINT CUSTOM POLYGON":
+        p1 = [int(w * (cfg.get("p1_x", 2) / 100.0)), int(h * (cfg.get("p1_y", 46) / 100.0))]
+        p2 = [int(w * (cfg.get("p2_x", 98) / 100.0)), int(h * (cfg.get("p2_y", 46) / 100.0))]
+        p3 = [int(w * (cfg.get("p3_x", 98) / 100.0)), int(h * (cfg.get("p3_y", 56) / 100.0))]
+        p4 = [int(w * (cfg.get("p4_x", 2) / 100.0)), int(h * (cfg.get("p4_y", 56) / 100.0))]
+        geo_pts = [p1, p2, p3, p4]
+    else:
+        top_y = int(h * (cfg.get("top_pct", 46) / 100.0))
+        bot_y = int(h * (cfg.get("bot_pct", 56) / 100.0))
+        left_x = int(w * (cfg.get("left_pct", 2) / 100.0))
+        right_x = int(w * (cfg.get("right_pct", 98) / 100.0))
+        geo_pts = [
+            [left_x, top_y],
+            [right_x, top_y],
+            [right_x, bot_y],
+            [left_x, bot_y]
+        ]
+    trip_y = int(h * (cfg.get("tripwire_pct", 50) / 100.0))
+    return geo_pts, trip_y
+
+def draw_calibration_preview(frame, geo_pts, trip_y, cfg=None):
+    """
+    Draws tactical calibration overlays, 3-zone visual fields, corner reticles,
+    and coordinate badges on a surveillance preview frame.
+    """
+    if frame is None:
+        return np.zeros((480, 720, 3), dtype=np.uint8)
+    vis = frame.copy()
+    h, w = vis.shape[:2]
+
+    top_y = min(p[1] for p in geo_pts)
+    bot_y = max(p[1] for p in geo_pts)
+
+    overlay = vis.copy()
+    pts_arr = np.array(geo_pts, dtype=np.int32).reshape((-1, 1, 2))
+    cv2.fillPoly(overlay, [pts_arr], (0, 217, 255))
+    cv2.rectangle(overlay, (0, bot_y), (w, h), (0, 0, 180), -1)
+    cv2.addWeighted(overlay, 0.22, vis, 0.78, 0, vis)
+
+    cv2.polylines(vis, [pts_arr], isClosed=True, color=(0, 217, 255), thickness=2)
+
+    cv2.line(vis, (0, trip_y), (w, trip_y), (0, 0, 255), 2)
+    for x in range(0, w, 28):
+        cv2.line(vis, (x, trip_y - 4), (x + 12, trip_y + 4), (0, 0, 255), 1)
+
+    cv2.putText(vis, "[ZONE A: APPROACH / BUFFER SECTOR]", (18, max(24, top_y - 14)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (139, 148, 158), 1)
+    cv2.putText(vis, "[ZONE B: VIRTUAL FENCE CORRIDOR // ARMED]", (18, max(top_y + 18, int((top_y + trip_y) / 2))), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 217, 255), 1)
+    cv2.putText(vis, f"ZERO-LINE TRIPWIRE // Y: {trip_y}px", (w - 280, max(18, trip_y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 0, 255), 1)
+    cv2.putText(vis, "[ZONE C: INFILTRATED RESTRICTED DOMESTIC TERRITORY]", (18, min(h - 14, bot_y + 24)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 80, 255), 1)
+
+    for idx, (px, py) in enumerate(geo_pts):
+        cv2.drawMarker(vis, (px, py), (0, 217, 255), cv2.MARKER_CROSS, 16, 2)
+        cv2.putText(vis, f"P{idx+1}({px},{py})", (px + 6, py - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 217, 255), 1)
+
+    return vis
 
 # Audio Siren Helper (Tactical Alert)
 def trigger_audio_siren():
@@ -655,6 +733,37 @@ if st.session_state["active_module"] == "DASHBOARD / LIVE MONITORING":
                 st.session_state["is_streaming"] = False
                 st.rerun()
 
+    # Interactive Virtual Fence Calibrator (Operator Configurable)
+    with st.expander("[VIRTUAL FENCE CALIBRATOR // MANUALLY CONFIGURE BARRIER & TRIPWIRE]", expanded=False):
+        f_p1, f_p2, f_p3, f_p4 = st.columns([3, 3, 3, 3])
+        with f_p1:
+            tw_val = st.slider("TRIPWIRE LINE Y (% HEIGHT)", 10, 90, st.session_state["fence_config"]["tripwire_pct"], key="s1_tripwire_slider")
+            st.session_state["fence_config"]["tripwire_pct"] = tw_val
+        with f_p2:
+            top_val = st.slider("FENCE CORRIDOR TOP Y (%)", 5, 85, st.session_state["fence_config"]["top_pct"], key="s1_top_slider")
+            st.session_state["fence_config"]["top_pct"] = top_val
+        with f_p3:
+            bot_val = st.slider("FENCE CORRIDOR BOT Y (%)", 15, 95, st.session_state["fence_config"]["bot_pct"], key="s1_bot_slider")
+            st.session_state["fence_config"]["bot_pct"] = bot_val
+        with f_p4:
+            preset_choice = st.selectbox("QUICK PRESET", ["CUSTOM", "CENTER CORRIDOR (46%-56%)", "UPPER PERIMETER (25%-35%)", "LOWER DEFENSE (65%-75%)", "WIDE BUFFER (30%-70%)"], key="s1_preset_select")
+            if preset_choice == "CENTER CORRIDOR (46%-56%)":
+                st.session_state["fence_config"]["top_pct"] = 46
+                st.session_state["fence_config"]["bot_pct"] = 56
+                st.session_state["fence_config"]["tripwire_pct"] = 50
+            elif preset_choice == "UPPER PERIMETER (25%-35%)":
+                st.session_state["fence_config"]["top_pct"] = 25
+                st.session_state["fence_config"]["bot_pct"] = 35
+                st.session_state["fence_config"]["tripwire_pct"] = 30
+            elif preset_choice == "LOWER DEFENSE (65%-75%)":
+                st.session_state["fence_config"]["top_pct"] = 65
+                st.session_state["fence_config"]["bot_pct"] = 75
+                st.session_state["fence_config"]["tripwire_pct"] = 70
+            elif preset_choice == "WIDE BUFFER (30%-70%)":
+                st.session_state["fence_config"]["top_pct"] = 30
+                st.session_state["fence_config"]["bot_pct"] = 70
+                st.session_state["fence_config"]["tripwire_pct"] = 50
+
     # Primary Viewport & Map Grid
     main_col, side_col = st.columns([13, 6])
 
@@ -789,17 +898,8 @@ if st.session_state["active_module"] == "DASHBOARD / LIVE MONITORING":
                 w_f = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 720)
                 h_f = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
 
-                # Virtual Fence is calibrated as a designated narrow barrier corridor across the perimeter
-                # Pre-fence approach is y < h_f * 0.46; Fence strip is 0.46 - 0.56; Post-fence domestic territory is y > 0.56
-                fence_strip_top = int(h_f * 0.46)
-                fence_strip_bot = int(h_f * 0.56)
-                geo_pts = [
-                    [int(w_f * 0.02), fence_strip_top],
-                    [int(w_f * 0.98), fence_strip_top],
-                    [int(w_f * 0.98), fence_strip_bot],
-                    [int(w_f * 0.02), fence_strip_bot]
-                ]
-                trip_y = int(h_f * 0.50)
+                # Virtual Fence is dynamically calibrated by operator configuration
+                geo_pts, trip_y = compute_fence_geometry(h_f, w_f, st.session_state.get("fence_config"))
 
                 use_clahe = (optics_mode == "LOW-LIGHT CLAHE")
                 use_thermal = "THERMAL" in optics_mode
@@ -1135,34 +1235,155 @@ elif st.session_state["active_module"] == "DETECTION REVIEW & FORENSICS":
 # SCREEN 4: VIRTUAL FENCE & INTRUSION ZONES
 # ==============================================================================
 elif st.session_state["active_module"] == "VIRTUAL FENCE & INTRUSION ZONES":
-    st.markdown('<div class="section-tag">VIRTUAL FENCE CONFIGURATION & INTRUSION ZONES</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-tag">VIRTUAL FENCE STUDIO // INTERACTIVE BOUNDARY & TRIPWIRE CALIBRATOR</div>', unsafe_allow_html=True)
+
+    # Active Sensor & Ingestion Source Selection for Calibration
+    cal_sources = ["CAM-01 BOP-NORTH (DAY PERIMETER)", "CAM-03 RIVERINE (FLIR THERMAL)"]
+    if st.session_state.get("custom_feed_path"):
+        cal_sources.insert(0, f"[INGESTED] {st.session_state['custom_feed_name']}")
+    cal_sensor = st.selectbox("SURVEILLANCE SENSOR CALIBRATION TARGET", cal_sources, index=0)
 
     z_col1, z_col2 = st.columns([1, 1])
 
     with z_col1:
         st.markdown("""
         <div class="hud-card">
-            <div class="section-tag" style="margin-top:0;">GEOFENCE BOUNDARY CALIBRATION</div>
+            <div class="section-tag" style="margin-top:0;">MANUAL GEOFENCE CALIBRATION CONTROLS</div>
         """, unsafe_allow_html=True)
-        st.selectbox("TARGET SENSOR", ["CAM-01 BOP-NORTH (PERIMETER)", "CAM-02 CHECKPOST-SOUTH", "CAM-03 RIVERINE-PATROL"])
-        st.selectbox("BOUNDARY GEOMETRY TYPE", ["POLYGON GEOFENCE (RESTRICTED AREA)", "LINEAR TRIPWIRE (ZERO-LINE DIRECTIONAL)"])
-        st.slider("INTRUSION SENSITIVITY LEVEL", 1, 10, 8)
-        st.slider("LOITERING DWELL TIME THRESHOLD (SECONDS)", 3, 30, 5)
-        st.slider("PRONE CRAWLING POSTURE RATIO (W/H)", 0.8, 2.0, 1.0)
-        st.checkbox("ARM VIRTUAL FENCE INTRUSION TRIGGER", value=True)
-        if st.button("COMMIT PERIMETER COORDINATES"):
-            st.success("GEOFENCE COORDINATES SYNCHRONIZED ACROSS AI INFERENCE NODES")
+
+        preset_choice = st.selectbox(
+            "QUICK PERIMETER PRESET",
+            [
+                "CUSTOM USER CALIBRATION",
+                "CENTER CORRIDOR (46% - 56%)",
+                "UPPER PERIMETER (25% - 35%)",
+                "LOWER FORWARD DEFENSE (65% - 75%)",
+                "WIDE BUFFER CORRIDOR (30% - 70%)"
+            ],
+            key="studio_preset_select"
+        )
+        if preset_choice == "CENTER CORRIDOR (46% - 56%)":
+            st.session_state["fence_config"].update({"top_pct": 46, "bot_pct": 56, "tripwire_pct": 50, "left_pct": 2, "right_pct": 98})
+        elif preset_choice == "UPPER PERIMETER (25% - 35%)":
+            st.session_state["fence_config"].update({"top_pct": 25, "bot_pct": 35, "tripwire_pct": 30, "left_pct": 2, "right_pct": 98})
+        elif preset_choice == "LOWER FORWARD DEFENSE (65% - 75%)":
+            st.session_state["fence_config"].update({"top_pct": 65, "bot_pct": 75, "tripwire_pct": 70, "left_pct": 2, "right_pct": 98})
+        elif preset_choice == "WIDE BUFFER CORRIDOR (30% - 70%)":
+            st.session_state["fence_config"].update({"top_pct": 30, "bot_pct": 70, "tripwire_pct": 50, "left_pct": 2, "right_pct": 98})
+
+        geom_mode = st.radio(
+            "CALIBRATION GEOMETRY MODE",
+            ["CORRIDOR SLIDERS (HORIZONTAL RECTANGLE & TRIPWIRE)", "4-POINT CUSTOM POLYGON (ANGLED / DIAGONAL)"],
+            index=0 if st.session_state["fence_config"].get("poly_mode") != "4-POINT CUSTOM POLYGON" else 1
+        )
+        st.session_state["fence_config"]["poly_mode"] = geom_mode
+
+        if geom_mode == "CORRIDOR SLIDERS (HORIZONTAL RECTANGLE & TRIPWIRE)":
+            c_tw = st.slider(
+                "ZERO-LINE TRIPWIRE POSITION (% FRAME HEIGHT)",
+                10, 90,
+                int(st.session_state["fence_config"].get("tripwire_pct", 50)),
+                step=1,
+                help="The exact boundary crossing line. Crossing this line triggers instant fence breach sealing."
+            )
+            st.session_state["fence_config"]["tripwire_pct"] = c_tw
+
+            c_top = st.slider(
+                "FENCE CORRIDOR TOP BOUNDARY (% HEIGHT)",
+                5, 85,
+                int(st.session_state["fence_config"].get("top_pct", 46)),
+                step=1,
+                help="Upper edge of designated perimeter barrier strip."
+            )
+            st.session_state["fence_config"]["top_pct"] = c_top
+
+            c_bot = st.slider(
+                "FENCE CORRIDOR BOTTOM BOUNDARY (% HEIGHT)",
+                15, 95,
+                int(st.session_state["fence_config"].get("bot_pct", 56)),
+                step=1,
+                help="Lower edge of designated perimeter barrier strip entering domestic restricted territory."
+            )
+            st.session_state["fence_config"]["bot_pct"] = max(c_top + 2, c_bot)
+
+            c_span = st.slider(
+                "FENCE LATERAL SPAN (% FRAME WIDTH: LEFT & RIGHT MARGINS)",
+                0, 100,
+                (int(st.session_state["fence_config"].get("left_pct", 2)), int(st.session_state["fence_config"].get("right_pct", 98))),
+                step=1
+            )
+            st.session_state["fence_config"]["left_pct"], st.session_state["fence_config"]["right_pct"] = c_span
+        else:
+            st.markdown('<div class="mono" style="color:#00D9FF; font-size:0.7rem;">CUSTOM 4-POINT POLYGON VERTICES (% OF FRAME)</div>', unsafe_allow_html=True)
+            p_col1, p_col2 = st.columns(2)
+            with p_col1:
+                st.session_state["fence_config"]["p1_x"] = st.number_input("P1 TOP-LEFT X (%)", 0, 100, int(st.session_state["fence_config"].get("p1_x", 2)))
+                st.session_state["fence_config"]["p1_y"] = st.number_input("P1 TOP-LEFT Y (%)", 0, 100, int(st.session_state["fence_config"].get("p1_y", 46)))
+                st.session_state["fence_config"]["p4_x"] = st.number_input("P4 BOT-LEFT X (%)", 0, 100, int(st.session_state["fence_config"].get("p4_x", 2)))
+                st.session_state["fence_config"]["p4_y"] = st.number_input("P4 BOT-LEFT Y (%)", 0, 100, int(st.session_state["fence_config"].get("p4_y", 56)))
+            with p_col2:
+                st.session_state["fence_config"]["p2_x"] = st.number_input("P2 TOP-RIGHT X (%)", 0, 100, int(st.session_state["fence_config"].get("p2_x", 98)))
+                st.session_state["fence_config"]["p2_y"] = st.number_input("P2 TOP-RIGHT Y (%)", 0, 100, int(st.session_state["fence_config"].get("p2_y", 46)))
+                st.session_state["fence_config"]["p3_x"] = st.number_input("P3 BOT-RIGHT X (%)", 0, 100, int(st.session_state["fence_config"].get("p3_x", 98)))
+                st.session_state["fence_config"]["p3_y"] = st.number_input("P3 BOT-RIGHT Y (%)", 0, 100, int(st.session_state["fence_config"].get("p3_y", 56)))
+
+            st.session_state["fence_config"]["tripwire_pct"] = st.slider(
+                "LINEAR TRIPWIRE ZERO-LINE Y (%)", 10, 90, int(st.session_state["fence_config"].get("tripwire_pct", 50))
+            )
+
+        st.session_state["fence_config"]["loiter_threshold_sec"] = st.slider(
+            "RESTRICTED ZONE LOITERING DWELL TIME (SECONDS)", 2, 30, int(st.session_state["fence_config"].get("loiter_threshold_sec", 5))
+        )
+        st.session_state["fence_config"]["is_armed"] = st.checkbox(
+            "ARM VIRTUAL FENCE INTRUSION INTERDICTION TRIGGER",
+            value=st.session_state["fence_config"].get("is_armed", True)
+        )
+
+        if st.button("COMMIT & ARM VIRTUAL FENCE TO SURVEILLANCE PIPELINE", use_container_width=True):
+            st.success(f"[SYS::OK] VIRTUAL FENCE ARMED ACROSS SURVEILLANCE PIPELINE: TOP={st.session_state['fence_config']['top_pct']}%, BOT={st.session_state['fence_config']['bot_pct']}%, TRIPWIRE={st.session_state['fence_config']['tripwire_pct']}%.")
         st.markdown("</div>", unsafe_allow_html=True)
 
     with z_col2:
-        st.markdown('<div class="section-tag">ZONE STATUS OVERVIEW</div>', unsafe_allow_html=True)
-        zones_data = [
-            {"ZONE ID": "ZONE-01", "NAME": "BUFFER RESTRICTED POLYGON", "SENSOR": "CAM-01", "STATUS": "[ARMED]", "LAST BREACH": "02 MINS AGO"},
-            {"ZONE ID": "ZONE-02", "NAME": "ZERO-LINE LINEAR TRIPWIRE", "SENSOR": "CAM-01", "STATUS": "[ARMED]", "LAST BREACH": "14 MINS AGO"},
-            {"ZONE ID": "ZONE-03", "NAME": "DEPOT NORTH NO-GO ZONE", "SENSOR": "CAM-03", "STATUS": "[ARMED]", "LAST BREACH": "1 HOUR AGO"},
-            {"ZONE ID": "ZONE-04", "NAME": "RIVERINE GEOFENCE SECTOR 3", "SENSOR": "CAM-03", "STATUS": "[ARMED]", "LAST BREACH": "NONE TODAY"}
-        ]
-        st.dataframe(pd.DataFrame(zones_data), use_container_width=True, hide_index=True)
+        st.markdown('<div class="section-tag">LIVE VISUAL CALIBRATION PREVIEW CANVAS</div>', unsafe_allow_html=True)
+
+        # Extract snapshot from selected surveillance target
+        preview_target_path = None
+        if "[INGESTED]" in cal_sensor and st.session_state.get("custom_feed_path"):
+            preview_target_path = st.session_state["custom_feed_path"]
+        elif "CAM-03" in cal_sensor:
+            preview_target_path = "assets/demo_night_thermal.mp4"
+        else:
+            preview_target_path = "assets/demo_border_patrol.mp4"
+
+        cap_prev = cv2.VideoCapture(preview_target_path)
+        ret_p, f_prev = cap_prev.read()
+        cap_prev.release()
+
+        if not ret_p or f_prev is None:
+            f_prev = np.full((480, 720, 3), (12, 18, 28), dtype=np.uint8)
+
+        hp, wp = f_prev.shape[:2]
+        geo_pts_prev, trip_y_prev = compute_fence_geometry(hp, wp, st.session_state["fence_config"])
+        annotated_calibration = draw_calibration_preview(f_prev, geo_pts_prev, trip_y_prev, st.session_state["fence_config"])
+
+        st.image(annotated_calibration, channels="BGR", use_container_width=True)
+
+        # Tactical Coordinate Telemetry Readout Box
+        t_pct = st.session_state["fence_config"].get("tripwire_pct", 50)
+        c_top_pct = st.session_state["fence_config"].get("top_pct", 46)
+        c_bot_pct = st.session_state["fence_config"].get("bot_pct", 56)
+        st.markdown(f"""
+        <div style="background: #0B121E; border: 1px solid rgba(0, 217, 255, 0.25); padding: 10px 14px; margin-top: 8px; border-radius: 2px;">
+            <div class="mono" style="color: #00D9FF; font-size: 0.72rem; font-weight: 700; margin-bottom: 4px;">
+                CALIBRATED PERIMETER GEOMETRY TELEMETRY [{wp}x{hp} px]
+            </div>
+            <div class="mono" style="color: #8B949E; font-size: 0.68rem; line-height: 1.8;">
+                ZERO-LINE TRIPWIRE: <span style="color: #FF3B30; font-weight:700;">Y = {trip_y_prev} px ({t_pct}%)</span><br>
+                FENCE BARRIER STRIP: <span style="color: #00D9FF;">Top Y = {geo_pts_prev[0][1]} px ({c_top_pct}%) | Bot Y = {geo_pts_prev[2][1]} px ({c_bot_pct}%) | Depth = {abs(geo_pts_prev[2][1] - geo_pts_prev[0][1])} px</span><br>
+                POLYGON VERTICES: <span style="color: #22C55E;">P1: {geo_pts_prev[0]} | P2: {geo_pts_prev[1]} | P3: {geo_pts_prev[2]} | P4: {geo_pts_prev[3]}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown('<div class="section-tag" style="margin-top: 20px;">POST-FENCE PENETRATION & INTRUDER TRACKING MONITOR</div>', unsafe_allow_html=True)
     post_fence_data = [
