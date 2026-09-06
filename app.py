@@ -8,6 +8,7 @@ import os
 import time
 import tempfile
 import datetime
+import base64
 import cv2
 import numpy as np
 import pandas as pd
@@ -326,6 +327,17 @@ if "fence_config" not in st.session_state:
         "loiter_threshold_sec": 5.0,
         "is_armed": True
     }
+if "alarm_config" not in st.session_state:
+    st.session_state["alarm_config"] = {
+        "enabled": True,                       # Master alarm sound enabled/disabled (option to turn off)
+        "sound_file": "alarm-car-or-home.mp3", # Acoustic alarm audio asset
+        "volume": 100,                         # Output volume percentage
+        "is_silenced": False,                  # Operator-silenced state
+        "last_trigger_time": 0.0,              # Cooldown timestamp
+        "cooldown_seconds": 6.0,               # Cooldown between repeat triggers
+        "trigger_threshold": "CRITICAL ONLY (SCORE >= 81)", # Threat trigger threshold
+        "test_trigger": False
+    }
 
 def compute_fence_geometry(h, w, cfg=None):
     """
@@ -389,14 +401,78 @@ def draw_calibration_preview(frame, geo_pts, trip_y, cfg=None):
 
     return vis
 
-# Audio Siren Helper (Tactical Alert)
+# ==============================================================================
+# TACTICAL AUDIO ALARM SYSTEM (alarm-car-or-home.mp3)
+# ==============================================================================
+def get_alarm_audio_path():
+    """
+    Resolves active alarm audio file path with priority to alarm-car-or-home.mp3.
+    """
+    candidates = [
+        "alarm-car-or-home.mp3",
+        os.path.join("assets", "alarm-car-or-home.mp3"),
+        os.path.join("assets", "alarm-car-or-home.mp3.mpeg"),
+        "siren.mp3",
+        os.path.join("assets", "siren.mp3")
+    ]
+    for c in candidates:
+        if os.path.exists(c) and os.path.getsize(c) > 0:
+            return c
+    return None
+
+def trigger_audio_alarm(placeholder=None, force=False):
+    """
+    Acoustic Alarm Trigger:
+    Plays alarm-car-or-home.mp3 with cooldown enforcement, mute state check, and master toggle check.
+    Returns True if sound was dispatched, False otherwise.
+    """
+    cfg = st.session_state.get("alarm_config", {})
+    if not cfg.get("enabled", True) and not force:
+        return False
+    if cfg.get("is_silenced", False) and not force:
+        return False
+
+    now = time.time()
+    last_t = cfg.get("last_trigger_time", 0.0)
+    cooldown = cfg.get("cooldown_seconds", 6.0)
+
+    if (now - last_t >= cooldown) or force:
+        cfg["last_trigger_time"] = now
+        sound_path = get_alarm_audio_path()
+        if sound_path and os.path.exists(sound_path):
+            try:
+                with open(sound_path, "rb") as af:
+                    b64_data = base64.b64encode(af.read()).decode("utf-8")
+                audio_html = f"""
+                <audio autoplay style="display:none;">
+                    <source src="data:audio/mp3;base64,{b64_data}" type="audio/mpeg">
+                </audio>
+                """
+                if placeholder is not None:
+                    placeholder.markdown(audio_html, unsafe_allow_html=True)
+                else:
+                    st.markdown(audio_html, unsafe_allow_html=True)
+                return True
+            except Exception:
+                if placeholder is not None:
+                    placeholder.audio(sound_path, format="audio/mp3", autoplay=True)
+                else:
+                    st.audio(sound_path, format="audio/mp3", autoplay=True)
+                return True
+    return False
+
+def silence_audio_alarm(placeholder=None):
+    """
+    Silences active acoustic alarm and marks it silenced for the session.
+    """
+    if "alarm_config" in st.session_state:
+        st.session_state["alarm_config"]["is_silenced"] = True
+    if placeholder is not None:
+        placeholder.empty()
+
 def trigger_audio_siren():
-    if os.path.exists("siren.mp3"):
-        st.markdown("""
-        <audio autoplay style="display:none;">
-            <source src="siren.mp3" type="audio/mpeg">
-        </audio>
-        """, unsafe_allow_html=True)
+    """Legacy alias redirecting to new tactical alarm engine."""
+    return trigger_audio_alarm()
 
 
 # ==============================================================================
@@ -488,6 +564,42 @@ with st.sidebar:
                 f'IMMUTABLE LEDGER: <span style="color:#22C55E;">SHA-256 SEALED</span><br>'
                 f'PING: <span style="color:#22C55E;">12 MS</span> // BITRATE: <span style="color:#00D9FF;">7.4 MBPS</span>'
                 f'</div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown('<div class="section-tag">TACTICAL ALARM INTERDICTION</div>', unsafe_allow_html=True)
+    
+    # Master Alarm Switch (Option to turn off alarm)
+    al_sidebar_val = st.toggle(
+        "ALARM AUDIO [ARM/DISARM]",
+        value=st.session_state["alarm_config"]["enabled"],
+        key="sidebar_alarm_toggle",
+        help="Turn acoustic alarm sound ON or OFF for perimeter breaches"
+    )
+    if al_sidebar_val != st.session_state["alarm_config"]["enabled"]:
+        st.session_state["alarm_config"]["enabled"] = al_sidebar_val
+        if not al_sidebar_val:
+            st.session_state["alarm_config"]["is_silenced"] = True
+        st.rerun()
+
+    # Status indicator & Mute/Unmute
+    if st.session_state["alarm_config"]["enabled"]:
+        if st.session_state["alarm_config"]["is_silenced"]:
+            st.markdown('<div class="mono" style="font-size:0.66rem; color:#FFB020; margin-bottom:4px;">STATUS: <strong>[SILENCED / MUTED]</strong></div>', unsafe_allow_html=True)
+            if st.button("[UNMUTE ALARM]", key="btn_sidebar_unmute", use_container_width=True):
+                st.session_state["alarm_config"]["is_silenced"] = False
+                st.rerun()
+        else:
+            st.markdown('<div class="mono" style="font-size:0.66rem; color:#22C55E; margin-bottom:4px;">STATUS: <strong>[ARMED // READY]</strong></div>', unsafe_allow_html=True)
+            if st.button("[OFF / MUTE ALARM]", key="btn_sidebar_mute", use_container_width=True):
+                st.session_state["alarm_config"]["is_silenced"] = True
+                st.rerun()
+    else:
+        st.markdown('<div class="mono" style="font-size:0.66rem; color:#8B949E; margin-bottom:4px;">STATUS: <strong>[DISARMED // OFF]</strong></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="mono" style="font-size: 0.60rem; color: #8B949E; line-height: 1.5; margin-top: 4px;">'
+                'ASSET: alarm-car-or-home.mp3<br>'
+                'TRIGGER: CRITICAL (SCORE >= 81)'
+                '</div>', unsafe_allow_html=True)
 
     st.markdown("---")
     if st.button("TERMINATE SESSION", use_container_width=True):
@@ -764,10 +876,58 @@ if st.session_state["active_module"] == "DASHBOARD / LIVE MONITORING":
                 st.session_state["fence_config"]["bot_pct"] = 70
                 st.session_state["fence_config"]["tripwire_pct"] = 50
 
+    # Tactical Acoustic Alarm Controls (alarm-car-or-home.mp3)
+    al_c1, al_c2, al_c3, al_c4 = st.columns([3, 3, 3, 3])
+    with al_c1:
+        al_on = st.toggle(
+            "ALARM AUDIO [ON/OFF]",
+            value=st.session_state["alarm_config"]["enabled"],
+            key="dash_alarm_toggle",
+            help="Enable or disable the acoustic perimeter alarm (alarm-car-or-home.mp3)"
+        )
+        if al_on != st.session_state["alarm_config"]["enabled"]:
+            st.session_state["alarm_config"]["enabled"] = al_on
+            if not al_on:
+                st.session_state["alarm_config"]["is_silenced"] = True
+            st.rerun()
+    with al_c2:
+        if st.session_state["alarm_config"]["enabled"]:
+            if st.session_state["alarm_config"]["is_silenced"]:
+                if st.button("[UNMUTE / ARM ALARM]", key="dash_btn_unmute", use_container_width=True):
+                    st.session_state["alarm_config"]["is_silenced"] = False
+                    st.rerun()
+            else:
+                if st.button("[OFF / MUTE ALARM]", key="dash_btn_mute", use_container_width=True):
+                    st.session_state["alarm_config"]["is_silenced"] = True
+                    st.rerun()
+        else:
+            if st.button("[ARM ALARM SYSTEM]", key="dash_btn_arm", use_container_width=True):
+                st.session_state["alarm_config"]["enabled"] = True
+                st.session_state["alarm_config"]["is_silenced"] = False
+                st.rerun()
+    with al_c3:
+        if st.button("[TEST ALARM AUDIO]", key="dash_btn_test", use_container_width=True, help="Test acoustic playback of alarm-car-or-home.mp3"):
+            st.session_state["alarm_config"]["test_trigger"] = True
+            st.rerun()
+    with al_c4:
+        al_status_style = "#22C55E" if (st.session_state["alarm_config"]["enabled"] and not st.session_state["alarm_config"]["is_silenced"]) else ("#FFB020" if st.session_state["alarm_config"]["is_silenced"] else "#8B949E")
+        al_status_text = "[ARMED // ACTIVE]" if (st.session_state["alarm_config"]["enabled"] and not st.session_state["alarm_config"]["is_silenced"]) else ("[SILENCED / MUTED]" if st.session_state["alarm_config"]["is_silenced"] else "[DISARMED / OFF]")
+        st.markdown(f"""
+        <div class="mono" style="padding: 6px 10px; background: #0B121E; border: 1px solid rgba(0, 217, 255, 0.2); border-left: 3px solid {al_status_style}; font-size: 0.68rem;">
+            ALARM: <strong style="color: {al_status_style};">{al_status_text}</strong><br>
+            FILE: <span style="color: #00D9FF;">alarm-car-or-home.mp3</span>
+        </div>
+        """, unsafe_allow_html=True)
+
     # Primary Viewport & Map Grid
     main_col, side_col = st.columns([13, 6])
 
     with main_col:
+        alarm_audio_placeholder = st.empty()
+        if st.session_state["alarm_config"].get("test_trigger"):
+            trigger_audio_alarm(alarm_audio_placeholder, force=True)
+            st.session_state["alarm_config"]["test_trigger"] = False
+
         st.markdown("""
         <div class="viewfinder-box">
             <div class="viewfinder-corner-tl"></div>
@@ -1021,19 +1181,29 @@ if st.session_state["active_module"] == "DASHBOARD / LIVE MONITORING":
                                 ev["tx_hash"] = tx_h
                                 recent_live_events.insert(0, ev)
 
-                        # Update Threat Banner with Explainable SITREP
+                        # Update Threat Banner with Explainable SITREP & Tactical Alarm
                         if has_critical and latest_threat:
                             sitrep_msg = latest_threat.get("explainable_sitrep") or f"TARGET: {latest_threat['label'].upper()} (TRACK #{latest_threat.get('track_id', '-')}) // INCIDENT: {latest_threat['type']} // INTEL: {latest_threat['description']}"
+                            
+                            al_cfg = st.session_state.get("alarm_config", {})
+                            al_active = al_cfg.get("enabled", True) and not al_cfg.get("is_silenced", False)
+                            al_badge = '<span class="mono" style="background: #FF3B30; color: #FFF; padding: 2px 8px; font-size: 0.65rem; border-radius: 2px; font-weight: 700;">[ALARM ACTIVE // alarm-car-or-home.mp3]</span>' if al_active else '<span class="mono" style="background: rgba(139, 148, 158, 0.3); color: #8B949E; padding: 2px 8px; font-size: 0.65rem; border-radius: 2px;">[ALARM: OFF / MUTED]</span>'
+
                             threat_banner_placeholder.markdown(f"""
                             <div class="threat-banner-active">
-                                <strong>[CRITICAL ALERT] PERIMETER THREAT CONFIRMED // SENTINEL LOCK-ON 🚨</strong><br>
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                    <strong>[CRITICAL ALERT] PERIMETER THREAT CONFIRMED // SENTINEL LOCK-ON</strong>
+                                    {al_badge}
+                                </div>
                                 {sitrep_msg}<br>
                                 IMMUTABLE LEDGER RECEIPT: <code>{latest_threat.get('tx_hash', '')[:28]}...</code>
                             </div>
                             """, unsafe_allow_html=True)
-                            trigger_audio_siren()
+                            if al_active:
+                                trigger_audio_alarm(alarm_audio_placeholder)
                         else:
                             threat_banner_placeholder.empty()
+                            alarm_audio_placeholder.empty()
 
                         # Dynamic update of SENTINEL Cognitive Strip with live Threat Score breakdown
                         cam_m = ai_engine.sentinel.camera_modes.get("CAM-01", "HIGH_MODE" if has_critical else "MEDIUM_MODE")
@@ -1449,6 +1619,71 @@ elif st.session_state["active_module"] == "ALERTS & INCIDENT DISPATCH":
     with b_col3:
         if st.button("TRANSMIT SITREP TO DEFENSE HEADQUARTERS", use_container_width=True):
             st.success("SITREP PACKET DISPATCHED VIA ENCRYPTED MIL-NET")
+
+    st.markdown("---")
+    st.markdown('<div class="section-tag">ACOUSTIC ALARM INTERDICTION CONSOLE // alarm-car-or-home.mp3</div>', unsafe_allow_html=True)
+    
+    al_box1, al_box2 = st.columns([1, 1])
+    with al_box1:
+        st.markdown('<div class="hud-card"><div class="section-tag" style="margin-top:0;">ALARM SYSTEM CONFIGURATION</div>', unsafe_allow_html=True)
+        
+        # Arm / Disarm Master Switch
+        alarm_master_state = st.toggle(
+            "ACOUSTIC ALARM SYSTEM [ARMED / ON]",
+            value=st.session_state["alarm_config"]["enabled"],
+            key="s5_alarm_master",
+            help="Global switch to turn acoustic perimeter siren ON or OFF"
+        )
+        st.session_state["alarm_config"]["enabled"] = alarm_master_state
+        if not alarm_master_state:
+            st.session_state["alarm_config"]["is_silenced"] = True
+
+        st.session_state["alarm_config"]["trigger_threshold"] = st.selectbox(
+            "TRIGGER SENSITIVITY THRESHOLD",
+            ["CRITICAL ONLY (SCORE >= 81)", "HIGH & CRITICAL (SCORE >= 61)", "ALL THREATS (SCORE >= 31)"],
+            index=0,
+            key="s5_alarm_thresh"
+        )
+        st.session_state["alarm_config"]["cooldown_seconds"] = st.slider(
+            "AUDIO RE-TRIGGER COOLDOWN (SECONDS)",
+            3.0, 30.0, float(st.session_state["alarm_config"].get("cooldown_seconds", 6.0)), step=1.0,
+            key="s5_alarm_cooldown"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with al_box2:
+        st.markdown('<div class="hud-card"><div class="section-tag" style="margin-top:0;">REAL-TIME INTERDICTION ACTIONS</div>', unsafe_allow_html=True)
+        s5_audio_placeholder = st.empty()
+        
+        s5_al_color = "#22C55E" if (st.session_state["alarm_config"]["enabled"] and not st.session_state["alarm_config"]["is_silenced"]) else ("#FFB020" if st.session_state["alarm_config"]["is_silenced"] else "#8B949E")
+        s5_al_badge = "[ARMED // ACTIVE]" if (st.session_state["alarm_config"]["enabled"] and not st.session_state["alarm_config"]["is_silenced"]) else ("[SILENCED / SNOOZED]" if st.session_state["alarm_config"]["is_silenced"] else "[DISARMED // OFF]")
+        
+        st.markdown(f"""
+        <div class="mono" style="padding: 10px; background: #05080E; border: 1px solid rgba(0, 217, 255, 0.2); border-left: 4px solid {s5_al_color}; margin-bottom: 12px; font-size: 0.75rem;">
+            ALARM STATUS: <strong style="color: {s5_al_color}; font-size: 0.9rem;">{s5_al_badge}</strong><br>
+            AUDIO PAYLOAD: <span style="color: #00D9FF;">alarm-car-or-home.mp3</span><br>
+            COOLDOWN: <span>{st.session_state['alarm_config']['cooldown_seconds']}s</span> | THRESHOLD: <span>{st.session_state['alarm_config']['trigger_threshold']}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        s5_btn1, s5_btn2 = st.columns(2)
+        with s5_btn1:
+            if st.session_state["alarm_config"]["enabled"] and not st.session_state["alarm_config"]["is_silenced"]:
+                if st.button("[OFF / MUTE ALARM NOW]", key="s5_mute_btn", use_container_width=True):
+                    st.session_state["alarm_config"]["is_silenced"] = True
+                    s5_audio_placeholder.empty()
+                    st.rerun()
+            else:
+                if st.button("[ARM / UNMUTE ALARM]", key="s5_unmute_btn", use_container_width=True):
+                    st.session_state["alarm_config"]["enabled"] = True
+                    st.session_state["alarm_config"]["is_silenced"] = False
+                    st.rerun()
+        with s5_btn2:
+            if st.button("[TEST ALARM SOUND]", key="s5_test_btn", use_container_width=True):
+                trigger_audio_alarm(s5_audio_placeholder, force=True)
+                st.success("ALARM TRANSMISSION TEST: alarm-car-or-home.mp3")
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ==============================================================================

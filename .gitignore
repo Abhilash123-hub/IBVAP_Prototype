@@ -33,6 +33,8 @@ evidence_reports/
 evidence_*.jpg
 *.pdf
 *.mp3
+!assets/alarm-car-or-home.mp3
+!alarm-car-or-home.mp3
 
 # IDE & OS
 .vscode/

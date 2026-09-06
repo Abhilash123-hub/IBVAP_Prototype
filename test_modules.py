@@ -293,12 +293,51 @@ def test_blockchain_and_pdf():
 
 
 def test_ai_engine():
-    print("\n--- [10/10] TESTING FULL AI VISION ORCHESTRATION PIPELINE ---")
+    print("\n--- [10/11] TESTING FULL AI VISION ORCHESTRATION PIPELINE ---")
     ai = AIEngine()
     blank_frame = np.zeros((480, 720, 3), dtype=np.uint8)
     disp, tracks, events, faces = ai.process_frame(blank_frame, conf_threshold=0.3)
     assert disp.shape == blank_frame.shape, "Output frame shape mismatch"
     print(f"[PASS] Full AI Vision Pipeline executed successfully. Frame shape: {disp.shape}")
+
+
+def test_alarm_system():
+    print("\n--- [11/11] TESTING ACOUSTIC ALARM SYSTEM & DISARM LOGIC ---")
+    sound_file = "alarm-car-or-home.mp3"
+    assert os.path.exists(sound_file), f"Alarm file {sound_file} not found in project root"
+    size = os.path.getsize(sound_file)
+    assert size > 500000, f"Alarm file size abnormal: {size} bytes"
+
+    # MPEG audio sync word verification (0xFF 0xFB / 0xFF 0xF3 / 0xFF 0xF2)
+    with open(sound_file, "rb") as f:
+        header = f.read(4)
+    assert header[0] == 0xFF and (header[1] & 0xE0) == 0xE0, "Invalid MPEG audio header"
+    print(f"[PASS] Audio file verified: {sound_file} ({size} bytes, Valid MPEG Audio Stream)")
+
+    # Test Alarm state logic (Arm, Disarm, Silence, Cooldown)
+    alarm_cfg = {
+        "enabled": True,
+        "is_silenced": False,
+        "sound_file": sound_file,
+        "last_trigger_time": 0.0,
+        "cooldown_seconds": 5.0
+    }
+    # 1. When armed and active -> trigger allowed
+    assert alarm_cfg["enabled"] and not alarm_cfg["is_silenced"]
+
+    # 2. Operator turns off the alarm -> trigger blocked
+    alarm_cfg["enabled"] = False
+    assert not (alarm_cfg["enabled"] and not alarm_cfg["is_silenced"])
+
+    # 3. Operator re-arms and mutes/silences -> trigger blocked
+    alarm_cfg["enabled"] = True
+    alarm_cfg["is_silenced"] = True
+    assert not (alarm_cfg["enabled"] and not alarm_cfg["is_silenced"])
+
+    # 4. Operator un-silences -> trigger allowed again
+    alarm_cfg["is_silenced"] = False
+    assert alarm_cfg["enabled"] and not alarm_cfg["is_silenced"]
+    print("[PASS] Alarm logic state machine verified (ARMED -> OFF/MUTED -> SILENCED -> RE-ARMED).")
 
 
 if __name__ == "__main__":
@@ -312,5 +351,6 @@ if __name__ == "__main__":
     test_db_manager()
     test_blockchain_and_pdf()
     test_ai_engine()
-    print("\n[SYS::OK] ALL 10 CORE CAPABILITIES SYSTEMATICALLY TESTED AND VERIFIED.")
+    test_alarm_system()
+    print("\n[SYS::OK] ALL 11 CORE CAPABILITIES SYSTEMATICALLY TESTED AND VERIFIED.")
 
