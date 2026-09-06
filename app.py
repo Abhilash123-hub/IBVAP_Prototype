@@ -440,22 +440,74 @@ if st.session_state["active_module"] == "DASHBOARD / LIVE MONITORING":
 
     update_hud_strip()
 
-    # SENTINEL Cognitive Resource Allocator Strip
+    # SENTINEL Cognitive Threat Score & Resource Allocator Strip
     sentinel_strip_placeholder = st.empty()
-    def update_sentinel_strip(active_cam="CAM-01", mode="MEDIUM_MODE", score=0):
+    def update_sentinel_strip(active_cam="CAM-01", mode="MEDIUM_MODE", score=0, threat_data=None):
         saved = ai_engine.sentinel.get_compute_optimization_percentage() if hasattr(ai_engine, "sentinel") else 78.0
-        m_color = "#FF3B30" if "HIGH" in mode else ("#00D9FF" if "MEDIUM" in mode else "#22C55E")
+        threat_data = threat_data or (ai_engine.sentinel.get_last_threat_breakdown() if hasattr(ai_engine, "sentinel") else {})
+        t_level = threat_data.get("level", "LOW") if threat_data else ("CRITICAL" if score > 80 else ("HIGH" if score > 60 else ("MEDIUM" if score > 30 else "LOW")))
+
+        # Visual Threat Level Color Palette
+        if t_level == "CRITICAL":
+            m_color = "#FF3B30"
+            lvl_bg = "rgba(255, 59, 48, 0.2)"
+            lvl_border = "#FF3B30"
+        elif t_level == "HIGH":
+            m_color = "#FB923C"
+            lvl_bg = "rgba(251, 146, 60, 0.2)"
+            lvl_border = "#FB923C"
+        elif t_level == "MEDIUM":
+            m_color = "#00D9FF"
+            lvl_bg = "rgba(0, 217, 255, 0.15)"
+            lvl_border = "#00D9FF"
+        else:
+            m_color = "#22C55E"
+            lvl_bg = "rgba(34, 197, 94, 0.15)"
+            lvl_border = "#22C55E"
+
+        # Active risk factor chips: T = H + V + Z + B + N + L + D
+        factors = threat_data.get("factors", {}) if threat_data else {}
+        factor_items = [
+            ("H", "Human", 20),
+            ("V", "Vehicle", 10),
+            ("Z", "Zone", 20),
+            ("B", "Breached", 40),
+            ("N", "Night", 10),
+            ("L", "Loiter", 15),
+            ("D", "Direction", 15)
+        ]
+        chips_html = ""
+        for code, label, wgt in factor_items:
+            f_info = factors.get(code, {})
+            is_active = f_info.get("active", False)
+            if is_active:
+                chip_style = f"background: {lvl_bg}; border: 1px solid {lvl_border}; color: {m_color}; font-weight: 700;"
+            else:
+                chip_style = "background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); color: #4B5563;"
+            chips_html += f'<span class="mono" style="{chip_style} padding: 2px 6px; font-size: 0.62rem; border-radius: 2px; margin-right: 4px;">[{code}: +{wgt} {label}]</span>'
+
         sentinel_strip_placeholder.markdown(f"""
-        <div style="background: #0B121E; border: 1px solid rgba(0, 217, 255, 0.25); border-left: 4px solid {m_color}; padding: 8px 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; border-radius: 2px;">
-            <div style="display: flex; align-items: center; gap: 12px;">
-                <span class="mono" style="color: #00D9FF; font-weight: 700; font-size: 0.72rem; letter-spacing: 1.5px;">SENTINEL BRAIN:</span>
-                <span class="mono" style="background: rgba(255, 59, 48, 0.15); border: 1px solid {m_color}; color: {m_color}; padding: 2px 8px; font-size: 0.68rem; font-weight: 700;">{active_cam} [{mode.replace('_', ' ')}]</span>
-                <span class="mono" style="color: #8B949E; font-size: 0.68rem;">CAM-02: [LOW MODE] | CAM-03: [LOW MODE] | CAM-04: [LOW MODE]</span>
+        <div style="background: #0B121E; border: 1px solid rgba(0, 217, 255, 0.25); border-left: 4px solid {m_color}; padding: 10px 14px; margin-bottom: 12px; border-radius: 2px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="mono" style="color: #00D9FF; font-weight: 700; font-size: 0.72rem; letter-spacing: 1.5px;">SENTINEL BRAIN:</span>
+                    <span class="mono" style="background: rgba(255, 59, 48, 0.15); border: 1px solid {m_color}; color: {m_color}; padding: 2px 8px; font-size: 0.68rem; font-weight: 700;">{active_cam} [{mode.replace('_', ' ')}]</span>
+                    <span class="mono" style="background: {lvl_bg}; border: 1px solid {lvl_border}; color: {m_color}; padding: 2px 8px; font-size: 0.68rem; font-weight: 700;">THREAT LEVEL: [{t_level}]</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 16px;">
+                    <span class="mono" style="color: #8B949E; font-size: 0.70rem;">THREAT SCORE: <strong style="color:{m_color}; font-size: 0.85rem;">{score}/100</strong></span>
+                    <span class="mono" style="color: #22C55E; font-size: 0.68rem; font-weight: 600;">COMPUTE SAVED: {saved}%</span>
+                    <span class="mono" style="color: #00D9FF; font-size: 0.68rem;">TRACKER: BYTETRACK</span>
+                </div>
             </div>
-            <div style="display: flex; align-items: center; gap: 16px;">
-                <span class="mono" style="color: #8B949E; font-size: 0.68rem;">THREAT SCORE: <strong style="color:{m_color};">{score}/100</strong></span>
-                <span class="mono" style="color: #22C55E; font-size: 0.68rem; font-weight: 600;">COMPUTE POWER SAVED: {saved}%</span>
-                <span class="mono" style="color: #00D9FF; font-size: 0.68rem;">TRACKER: BYTETRACK</span>
+            <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(255, 255, 255, 0.05); padding-top: 6px;">
+                <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 2px;">
+                    <span class="mono" style="color: #8B949E; font-size: 0.62rem; margin-right: 6px; letter-spacing: 0.5px;">FORMULA: T = H + V + Z + B + N + L + D</span>
+                    {chips_html}
+                </div>
+                <div class="mono" style="color: #8B949E; font-size: 0.62rem; white-space: nowrap; margin-left: 8px;">
+                    [LOW: 0-30] [MED: 31-60] [HIGH: 61-80] [CRIT: 81-100]
+                </div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -883,10 +935,11 @@ if st.session_state["active_module"] == "DASHBOARD / LIVE MONITORING":
                         else:
                             threat_banner_placeholder.empty()
 
-                        # Dynamic update of SENTINEL Cognitive Strip
+                        # Dynamic update of SENTINEL Cognitive Strip with live Threat Score breakdown
                         cam_m = ai_engine.sentinel.camera_modes.get("CAM-01", "HIGH_MODE" if has_critical else "MEDIUM_MODE")
-                        cam_s = ai_engine.sentinel.camera_threat_scores.get("CAM-01", 85 if has_critical else 20)
-                        update_sentinel_strip("CAM-01", cam_m, cam_s)
+                        t_data = ai_engine.sentinel.get_last_threat_breakdown()
+                        cam_s = t_data.get("score", 85 if has_critical else 20)
+                        update_sentinel_strip("CAM-01", cam_m, cam_s, threat_data=t_data)
 
                         # Update HUD Stats
                         n_humans = sum(1 for t in tracks if t.label == "Person")
@@ -1226,6 +1279,45 @@ elif st.session_state["active_module"] == "ANALYTICS & THREAT REPORTS":
             st.markdown('<div class="section-tag">DISTRIBUTION BY INCIDENT TYPE</div>', unsafe_allow_html=True)
             if "event_type" in df_rec.columns and not df_rec["event_type"].dropna().empty:
                 st.bar_chart(df_rec["event_type"].value_counts())
+
+    st.markdown("---")
+    st.markdown('<div class="section-tag">SENTINEL THREAT SCORE MATHEMATICS & RISK MATRIX</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="background: #0B121E; border: 1px solid rgba(0, 217, 255, 0.25); border-left: 4px solid #00D9FF; padding: 16px; margin-bottom: 16px; border-radius: 2px;">
+        <div class="mono" style="color: #00D9FF; font-size: 0.85rem; font-weight: 700; margin-bottom: 8px;">
+            MATHEMATICAL FORMULATION: T = min(100, H + V + Z + B + N + L + D)
+        </div>
+        <div class="mono" style="color: #8B949E; font-size: 0.72rem; line-height: 1.8;">
+            The SENTINEL cognitive brain dynamically calculates composite threat vectors across all monitored feeds.<br>
+            Each risk factor is evaluated in real-time through geometric ray casting, ByteTrack kinematics, and optical classification.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    rf_c1, rf_c2 = st.columns([3, 2])
+    with rf_c1:
+        st.markdown('<div class="mono" style="color:#00D9FF; font-size:0.75rem; font-weight:700; margin-bottom:6px;">RISK FACTORS & WEIGHT MATRIX</div>', unsafe_allow_html=True)
+        risk_matrix = [
+            {"FACTOR": "Human detected", "SYMBOL": "H", "WEIGHT": "+20", "TRIGGER CRITERIA": "Person class detected in sensor frame"},
+            {"FACTOR": "Vehicle detected", "SYMBOL": "V", "WEIGHT": "+10", "TRIGGER CRITERIA": "Car, Truck, Bus, or Motorcycle detected"},
+            {"FACTOR": "Near restricted zone", "SYMBOL": "Z", "WEIGHT": "+20", "TRIGGER CRITERIA": "Target within 120px buffer of perimeter barrier"},
+            {"FACTOR": "Virtual border breached", "SYMBOL": "B", "WEIGHT": "+40", "TRIGGER CRITERIA": "Boundary crossing verified via ray casting"},
+            {"FACTOR": "Night-time activity", "SYMBOL": "N", "WEIGHT": "+10", "TRIGGER CRITERIA": "Low-light or thermal spectrum mode engaged"},
+            {"FACTOR": "Loitering detected", "SYMBOL": "L", "WEIGHT": "+15", "TRIGGER CRITERIA": "Target dwell time >= 5.0s in secure area"},
+            {"FACTOR": "Moving toward border", "SYMBOL": "D", "WEIGHT": "+15", "TRIGGER CRITERIA": "Inward velocity vector oriented to border line"}
+        ]
+        st.dataframe(pd.DataFrame(risk_matrix), use_container_width=True, hide_index=True)
+
+    with rf_c2:
+        st.markdown('<div class="mono" style="color:#00D9FF; font-size:0.75rem; font-weight:700; margin-bottom:6px;">THREAT LEVEL CLASSIFICATION BANDS</div>', unsafe_allow_html=True)
+        level_matrix = [
+            {"LEVEL": "[LOW]", "SCORE RANGE": "0 - 30", "ACTION": "Tier 1: Sentry Standby (Frame Skip 5x, 0.1% CPU)"},
+            {"LEVEL": "[MEDIUM]", "SCORE RANGE": "31 - 60", "ACTION": "Tier 2: Scout Detection (RT-DETR + ByteTrack)"},
+            {"LEVEL": "[HIGH]", "SCORE RANGE": "61 - 80", "ACTION": "Tier 3: Tactical Lock (Full Vision + FRS + SITREP)"},
+            {"LEVEL": "[CRITICAL]", "SCORE RANGE": "81 - 100", "ACTION": "Interdiction Alarm (Siren + Blockchain Sealing)"}
+        ]
+        st.dataframe(pd.DataFrame(level_matrix), use_container_width=True, hide_index=True)
 
 
 # ==============================================================================

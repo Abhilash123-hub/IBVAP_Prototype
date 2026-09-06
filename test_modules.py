@@ -78,17 +78,57 @@ def test_sentinel_core():
     assert motion_detected, "Failed to detect motion on frame shift"
     print(f"[PASS] Adaptive Watcher optical difference: {motion_px} moving pixels detected (<0.5ms).")
 
-    # 2. Test Threat Score computation
-    events = [
-        {"type": "CRAWLING_INFILTRATION", "threat_level": "CRITICAL"},
-        {"type": "PERIMETER_BREACH", "threat_level": "CRITICAL"}
-    ]
-    threat_score, has_critical = core.compute_threat_score(events, [])
-    assert threat_score >= 80, f"Expected threat score >= 80, got {threat_score}"
-    assert has_critical is True
+    # 2. Test SENTINEL Threat Score Mathematics (T = H + V + Z + B + N + L + D)
+    # Scenario A: Human detected alone (H=+20) -> Score: 20, Level: LOW
+    from tracker import TrackedObject
+    tr_human = TrackedObject(1, [50, 50, 90, 140], 0, "Person", 0.90)
+    score_a, crit_a = core.compute_threat_score([], [tr_human])
+    data_a = core.get_last_threat_breakdown()
+    assert score_a == 20, f"Expected 20 for human alone, got {score_a}"
+    assert data_a["level"] == "LOW", f"Expected LOW level for 20, got {data_a['level']}"
+    assert crit_a is False
+    print(f"[PASS] Scenario A: Human Detected -> Score: {score_a}/100 [{data_a['level']}]")
+
+    # Scenario B: Human near border moving inward (H=+20, Z=+20, D=+15) -> Score: 55, Level: MEDIUM
+    tr_near = TrackedObject(2, [50, 180, 90, 260], 0, "Person", 0.90)
+    tr_near.direction = "South" # Moving toward border
+    tr_near.vy = 12.0
+    score_b, crit_b = core.compute_threat_score([], [tr_near], tripwire_y=280)
+    data_b = core.get_last_threat_breakdown()
+    assert 50 <= score_b <= 60, f"Expected MEDIUM threat score (50-60), got {score_b}"
+    assert data_b["level"] == "MEDIUM", f"Expected MEDIUM level, got {data_b['level']}"
+    assert crit_b is False
+    print(f"[PASS] Scenario B: Near Border Moving Inward -> Score: {score_b}/100 [{data_b['level']}] (Factors: {data_b['active_factors']})")
+
+    # Scenario C: Virtual border crossed (H=+20, Z=+20, B=+40, D=+15) -> Score: 95, Level: CRITICAL
+    tr_breach = TrackedObject(3, [50, 300, 90, 380], 0, "Person", 0.95)
+    tr_breach.has_crossed_fence = True
+    tr_breach.direction = "South"
+    score_c, crit_c = core.compute_threat_score([], [tr_breach], tripwire_y=280)
+    data_c = core.get_last_threat_breakdown()
+    assert score_c >= 90, f"Expected CRITICAL score >= 90, got {score_c}"
+    assert data_c["level"] == "CRITICAL", f"Expected CRITICAL level, got {data_c['level']}"
+    assert crit_c is True
+    print(f"[PASS] Scenario C: Virtual Border Crossed -> Score: {score_c}/100 [{data_c['level']}] (Factors: {data_c['active_factors']})")
+
+    # Scenario D: All factors active -> Capped at 100
+    tr_all = TrackedObject(4, [50, 300, 90, 380], 0, "Person", 0.95)
+    tr_all.has_crossed_fence = True
+    tr_all.is_loitering = True
+    tr_all.direction = "South"
+    tr_veh = TrackedObject(5, [150, 300, 220, 360], 2, "Car", 0.92)
+    score_d, crit_d = core.compute_threat_score(
+        events=[{"type": "PERIMETER_BREACH", "threat_level": "CRITICAL"}],
+        tracks=[tr_all, tr_veh],
+        is_night_mode=True,
+        tripwire_y=280
+    )
+    assert score_d == 100, f"Expected capped score of 100, got {score_d}"
+    assert crit_d is True
+    print(f"[PASS] Scenario D: All Risk Factors Triggered -> Score: {score_d}/100 [{core.get_last_threat_breakdown()['level']}]")
 
     # 3. Test Dynamic Mode Decision
-    mode = core.decide_processing_mode("CAM-01", motion_detected=True, threat_score=threat_score, has_critical=has_critical)
+    mode = core.decide_processing_mode("CAM-01", motion_detected=True, threat_score=score_c, has_critical=crit_c)
     assert mode == SentinelCore.MODE_HIGH, f"Expected HIGH_MODE, got {mode}"
 
     # Sentry Rest mode when calm
@@ -101,7 +141,8 @@ def test_sentinel_core():
     print(f"[PASS] SENTINEL Mode Transitions: CAM-01 -> {mode} | CAM-02 -> {calm_mode} | Compute Power Saved: {pct_saved}%")
 
     # 4. Explainable Alert SITREP
-    sitrep = ExplainableAlertEngine.format_explainable_alert(events[0], tx_hash="0x9f8b4a2e...")
+    sample_ev = {"type": "CRAWLING_INFILTRATION", "threat_level": "CRITICAL"}
+    sitrep = ExplainableAlertEngine.format_explainable_alert(sample_ev, tx_hash="0x9f8b4a2e...")
     assert "[CRITICAL]" in sitrep
     assert "CRAWLING_INFILTRATION" in sitrep
     print(f"[PASS] Explainable SITREP: {sitrep}")

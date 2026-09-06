@@ -76,7 +76,13 @@ class AIEngine:
 
         # Preliminary threat check from active tracks
         active_tracks = list(self.tracker.tracks.values())
-        threat_score, has_critical = self.sentinel.compute_threat_score([], active_tracks)
+        threat_score, has_critical = self.sentinel.compute_threat_score(
+            events=[],
+            tracks=active_tracks,
+            is_night_mode=(use_thermal or use_clahe),
+            tripwire_y=tripwire_y,
+            geofence_pts=geofence_pts
+        )
 
         # Determine Processing Mode
         if force_mode:
@@ -185,10 +191,18 @@ class AIEngine:
             bev["explainable_sitrep"] = self.explainable_engine.format_explainable_alert(bev, matched_tr)
             events.append(bev)
 
-        # Recalculate dynamic Threat Score with detected events
-        final_threat_score, is_critical = self.sentinel.compute_threat_score(events, active_tracks)
-        # Escalate to HIGH MODE if critical event detected
-        if is_critical or final_threat_score >= 50:
+        # Recalculate dynamic Threat Score with detected events and environmental factors
+        final_threat_score, is_critical = self.sentinel.compute_threat_score(
+            events=events,
+            tracks=active_tracks,
+            is_night_mode=(use_thermal or use_clahe),
+            tripwire_y=tripwire_y,
+            geofence_pts=geofence_pts
+        )
+        self.last_threat_data = self.sentinel.get_last_threat_breakdown()
+
+        # Escalate to HIGH MODE if critical event or threat score in HIGH/CRITICAL band (>= 61)
+        if is_critical or final_threat_score >= 61:
             current_mode = SentinelCore.MODE_HIGH
             self.sentinel.camera_modes[camera_id] = current_mode
 
@@ -229,26 +243,49 @@ class AIEngine:
             face_matches=face_matches,
             camera_id=camera_id,
             mode=current_mode,
-            threat_score=final_threat_score
+            threat_score=final_threat_score,
+            threat_data=self.last_threat_data
         )
 
         return display_frame, active_tracks, events, face_matches
 
     def render_tactical_hud(self, frame, tracks, breached_track_ids, geofence_pts=None,
                             tripwire_y=None, face_matches=None, camera_id="CAM-01",
-                            mode=SentinelCore.MODE_MEDIUM, threat_score=0):
+                            mode=SentinelCore.MODE_MEDIUM, threat_score=0, threat_data=None):
         """Draws professional military/C2 tactical overlays onto the video frame."""
         vis = frame.copy()
         h, w = vis.shape[:2]
 
-        # 1. Top HUD Header with SENTINEL Brain Mode & Threat Meter
-        cv2.rectangle(vis, (0, 0), (w, 30), (7, 10, 15), -1)
-        mode_color = (0, 0, 255) if mode == SentinelCore.MODE_HIGH else ((0, 217, 255) if mode == SentinelCore.MODE_MEDIUM else (34, 197, 94))
-        mode_tag = f"SENTINEL: [{mode.replace('_', ' ')}] // SCORE: {threat_score}/100"
-        cv2.putText(vis, mode_tag, (16, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.44, mode_color, 1)
+        threat_data = threat_data or getattr(self, "last_threat_data", {})
+        threat_lvl = threat_data.get("level", "LOW")
 
-        opt_text = f"COMPUTE SAVED: {self.sentinel.get_compute_optimization_percentage()}% | TRACKER: BYTETRACK"
-        cv2.putText(vis, opt_text, (w - 380, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 217, 255), 1)
+        # Visual Threat Level color palette (NORAD / C2 standard):
+        # LOW (0-30): Tactical Green
+        # MEDIUM (31-60): Tactical Cyan/Yellow
+        # HIGH (61-80): Tactical Amber/Orange
+        # CRITICAL (81-100): Alert Red
+        if threat_lvl == "CRITICAL":
+            score_color = (0, 0, 255)
+        elif threat_lvl == "HIGH":
+            score_color = (0, 140, 255)
+        elif threat_lvl == "MEDIUM":
+            score_color = (0, 217, 255)
+        else:
+            score_color = (34, 197, 94)
+
+        # 1. Top HUD Header with SENTINEL Threat Score, Level & Active Factors
+        cv2.rectangle(vis, (0, 0), (w, 32), (7, 10, 15), -1)
+
+        active_factors = threat_data.get("active_factors", [])
+        factor_str = " ".join(f"[{f}]" for f in active_factors)
+        if factor_str:
+            factor_str = f" // {factor_str}"
+
+        hud_tag = f"SENTINEL THREAT SCORE: {threat_score}/100 [{threat_lvl}]{factor_str}"
+        cv2.putText(vis, hud_tag, (14, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.43, score_color, 1)
+
+        opt_text = f"COMPUTE SAVED: {self.sentinel.get_compute_optimization_percentage()}% | MODE: [{mode.replace('_', ' ')}]"
+        cv2.putText(vis, opt_text, (w - 370, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 217, 255), 1)
 
         # Visual Range Zone Labels (Separating pre-fence approach and post-fence domestic territory)
         cv2.putText(vis, "SECTOR-07: BUFFER / APPROACH SECTOR", (w - 295, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (139, 148, 158), 1)
